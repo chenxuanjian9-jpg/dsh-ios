@@ -1,0 +1,76 @@
+name: Build Unsigned IPA
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install Dependencies
+        run: |
+          brew install meson ninja lld libarchive
+          gem install xcodeproj
+
+      - name: Build Emulator
+        run: make emulator
+
+      # 核心破解步骤：用纯脚本手动下载并构建 rootfs，完全不执行 ish
+      - name: Download and Prepare Rootfs (Bypass iSH)
+        run: |
+          echo "Downloading Alpine minirootfs..."
+          mkdir -p build
+          # 下载 Alpine 官方的基础镜像 (aarch64 架构)
+          curl -L -o alpine.tar.gz https://dl-cdn.alpinelinux.org/alpine/v3.19/releases/aarch64/alpine-minirootfs-3.19.1-aarch64.tar.gz
+          
+          # 解压到临时目录
+          mkdir -p rootfs_temp
+          tar -xzf alpine.tar.gz -C rootfs_temp
+          
+          # 将 dsh-ios 需要的 Node.js 和额外环境直接塞进 rootfs
+          # 注意：这里如果能找到官方编译好的 dsh-rootfs 最好，找不到就只能用基础的 Alpine 试试水
+          
+          # 按照 iSH 的要求，将 rootfs 打包成 tar.gz 放入预期目录
+          tar -czf build/rootfs.tar.gz -C rootfs_temp .
+
+      - name: Archive App
+        run: |
+          xcodebuild archive \
+            -project DSH.xcodeproj \
+            -scheme DSH \
+            -destination 'generic/platform=iOS' \
+            -archivePath $RUNNER_TEMP/DSH.xcarchive \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGNING_ALLOWED=NO
+
+      - name: Export IPA
+        run: |
+          cat <<EOF > $RUNNER_TEMP/ExportOptions.plist
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+              <key>method</key>
+              <string>development</string>
+          </dict>
+          </plist>
+          EOF
+          xcodebuild -exportArchive \
+            -archivePath $RUNNER_TEMP/DSH.xcarchive \
+            -exportOptionsPlist $RUNNER_TEMP/ExportOptions.plist \
+            -exportPath $RUNNER_TEMP/export
+
+      - name: Upload IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: DSH-unsigned-ipa
+          path: ${{ runner.temp }}/export/*.ipa
