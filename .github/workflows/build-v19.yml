@@ -1,0 +1,59 @@
+name: Build Unsigned IPA
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install Dependencies
+        run: |
+          brew install meson ninja lld libarchive
+          gem install xcodeproj
+
+      - name: Build Emulator
+        run: make emulator
+
+      - name: Download and Prepare Rootfs
+        run: |
+          mkdir -p build
+          curl -L -o alpine.tar.gz https://dl-cdn.alpinelinux.org/alpine/v3.19/releases/aarch64/alpine-minirootfs-3.19.1-aarch64.tar.gz
+          mkdir -p rootfs_temp
+          tar -xzf alpine.tar.gz -C rootfs_temp
+          tar -czf build/root.tar.gz -C rootfs_temp .
+
+      - name: Archive App
+        run: |
+          xcodebuild archive \
+            -project DSH.xcodeproj \
+            -scheme DSH \
+            -destination 'generic/platform=iOS' \
+            -archivePath $RUNNER_TEMP/DSH.xcarchive \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGNING_ALLOWED=NO
+
+      # 🚀 终极解法：绕过 Xcode 的签名导出检查，手动打包未签名 IPA
+      - name: Package Unsigned IPA Manually
+        run: |
+          mkdir -p $RUNNER_TEMP/Payload
+          # 从 xcarchive 中提取 .app 文件
+          cp -R $RUNNER_TEMP/DSH.xcarchive/Products/Applications/DSH.app $RUNNER_TEMP/Payload/
+          cd $RUNNER_TEMP
+          # 将 Payload 文件夹压缩成标准的 ipa 文件
+          zip -r DSH-unsigned.ipa Payload
+
+      - name: Upload IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: DSH-unsigned-ipa
+          path: $RUNNER_TEMP/DSH-unsigned.ipa
